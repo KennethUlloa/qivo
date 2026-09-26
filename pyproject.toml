@@ -1,0 +1,18 @@
+[project]
+name = "qivo"
+version = "0.1.0"
+description = "A small Flask layer for dependency injection, authorization, and response serialization."
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "alembic>=1.20.0",
+    "flask>=3.1.3",
+    "sqlalchemy>=2.1.1",
+]
+
+[project.scripts]
+qivo = "qivo.cli:cli"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
