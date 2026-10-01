@@ -341,4 +341,12 @@ class SQLAlchemyConfig:
 
 
 from qivo.db.sql.migrations import AlembicMigrations, MigrationConfig
-from qivo.db.sql.extensions import SQLEngine
+from qivo.db.sql.sessions import (
+    DatabaseSessionInterface,
+    ServerSideSession,
+    SessionConfig,
+    SessionStore,
+    prune_sessions,
+    session_model,
+)
+from qivo.db.sql.extensions import DatabaseSessions, SQLEngine

@@ -1,14 +1,24 @@
 from collections.abc import Callable, Mapping
+from datetime import timedelta
 from typing import Any, Protocol
 
+from flask.sessions import SessionInterface
 from sqlalchemy import Engine
 
 from qivo.db.sql import Model, SQLAlchemyConfig, close_session
+from qivo.db.sql.sessions import (
+    DatabaseSessionInterface,
+    SessionConfig,
+    SessionStore,
+    session_factory,
+    session_model,
+)
 
 
 class ConfigurableApp(Protocol):
     config: Mapping[str, Any]
     extensions: dict[str, Any]
+    session_interface: SessionInterface
 
     def teardown_request(
         self, func: Callable[[BaseException | None], Any]
@@ -57,3 +67,77 @@ class SQLEngine:
         close_session(self.model)
         if self.engine is not None:
             self.engine.dispose()
+
+
+class DatabaseSessions:
+    """Stores the Flask session in the database instead of the cookie.
+
+    Attach it to opt in; without it the app keeps Flask's signed cookie. The
+    session rows live in the tables of the same model base, so create the table
+    with the migration commands.
+    """
+
+    def __init__(
+        self,
+        app: ConfigurableApp | None = None,
+        *,
+        model: type[Model] = Model,
+        config: SessionConfig | None = None,
+    ):
+        self.app: ConfigurableApp | None = None
+        self.model = model
+        self.config = config
+        self.store: SessionStore | None = None
+        self.interface: DatabaseSessionInterface | None = None
+
+        if app is not None:
+            self.init_app(app)
+
+    def init_app(self, app: ConfigurableApp) -> None:
+        if self.app is not None and self.app is not app:
+            raise RuntimeError(
+                "A DatabaseSessions instance can be attached to only one app"
+            )
+
+        existing = app.extensions.get("qivo.sessions")
+        if existing is not None and existing is not self:
+            raise RuntimeError(
+                "A DatabaseSessions extension is already registered on this app"
+            )
+        if existing is self:
+            return
+
+        config = self._resolve_config(app)
+        store = SessionStore(
+            session_model(self.model, config.table), session_factory(self.model)
+        )
+        interface = DatabaseSessionInterface(store, config)
+
+        self.config = config
+        self.store = store
+        self.interface = interface
+        self.app = app
+        app.extensions["qivo.sessions"] = self
+        app.session_interface = interface
+
+    def _resolve_config(self, app: ConfigurableApp) -> SessionConfig:
+        base = self.config or SessionConfig()
+
+        return SessionConfig(
+            table=app.config.get("QIVO_SESSION_TABLE") or base.table,
+            lifetime=_lifetime(
+                app.config.get("QIVO_SESSION_LIFETIME"), base.lifetime
+            ),
+            cleanup_interval=int(
+                app.config.get("QIVO_SESSION_CLEANUP_INTERVAL")
+                or base.cleanup_interval
+            ),
+        )
+
+
+def _lifetime(value: Any, default: timedelta) -> timedelta:
+    if value is None:
+        return default
+    if isinstance(value, timedelta):
+        return value
+    return timedelta(seconds=float(value))

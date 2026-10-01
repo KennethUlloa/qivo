@@ -217,6 +217,70 @@ For an isolated declarative base, build one with `model_base()` and hand it to
 `SQLEngine(app, model=Base)`. Without an argument, `transaction()`, `get_session()`
 and `close_session()` target the most recently configured base.
 
+## Sessions
+
+By default the session travels in Flask's signed cookie. Attach `DatabaseSessions`
+to keep it in the database instead; the views keep using `session` and the cookie
+carries only an opaque id:
+
+```python
+from qivo.db.sql import DatabaseSessions
+
+app = Flask(__name__)
+app.config.from_mapping(
+    SQLALCHEMY_DATABASE_URI="sqlite:///app.db",
+    QIVO_SESSION_LIFETIME=60 * 60 * 24 * 14,  # 14 days, in seconds
+)
+qivo = Qivo(app)
+db = SQLEngine(app)
+sessions = DatabaseSessions(app)  # Without this the cookie keeps the session.
+```
+
+```python
+@app.get("/counter")
+@qivo.view()
+def counter():
+    session["views"] = session.get("views", 0) + 1
+    return {"views": session["views"]}
+```
+
+The rows live in the tables of the same model base, so tell the migration commands
+about them with a `[session]` section in `qivo.toml` and create the table:
+
+```console
+uv run qivo migrate --message "session table"
+uv run qivo migrate:apply
+```
+
+```toml
+[session]
+enabled = true
+table = "qivo_sessions"
+```
+
+`table` defaults to `qivo_sessions`, and `enabled` only matters for migrations:
+the commands do not run your app code, so they register the table from this
+section instead of finding it at runtime. With an isolated base, hand the same
+one to both extensions, `SQLEngine(app, model=Base)` and
+`DatabaseSessions(app, model=Base)`, so the table lands in that metadata.
+
+Expired rows are deleted by a sweep that runs once every
+`QIVO_SESSION_CLEANUP_INTERVAL` requests, one hundred by default, and on demand:
+
+```console
+uv run qivo sessions:prune
+```
+
+Notes:
+
+- Values must be JSON serializable, so store a date as an ISO string instead of
+  a `date`. In exchange, the session is queryable and shared by every process.
+- `QIVO_SESSION_LIFETIME` sets how long a browser session row lives; a permanent
+  session uses `PERMANENT_SESSION_LIFETIME` instead.
+- Nothing is signed, so `SECRET_KEY` is not required for the session.
+- Two concurrent requests on the same session overwrite each other, the same way
+  the default cookie behaves.
+
 ## Migrations
 
 `AlembicMigrations` uses `Model.metadata` and creates a standard `migrations/`

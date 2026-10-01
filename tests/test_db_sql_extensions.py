@@ -2,28 +2,10 @@ import pytest
 from flask import Flask
 from sqlalchemy import inspect
 
-from qivo.db.sql import close_session, get_session, model_base
+from qivo.db.sql import get_session, model_base
 from qivo.db.sql.extensions import SQLEngine
 
-from conftest import Base, User, load_detached
-
-
-@pytest.fixture
-def sql_app(tmp_path):
-    app = Flask(__name__)
-    app.config.from_mapping(
-        SQLALCHEMY_DATABASE_URI=f"sqlite:///{tmp_path}/app.db",
-        SQLALCHEMY_ENGINE_OPTIONS={},
-        SQLALCHEMY_SESSION_OPTIONS={},
-    )
-    extension = SQLEngine(app, model=Base)
-    Base.metadata.create_all(extension.engine)
-    try:
-        yield app, extension
-    finally:
-        close_session(Base)
-        Base.metadata.drop_all(extension.engine)
-        extension.engine.dispose()
+from conftest import Base, User, load_detached, sql_app  # noqa: F401
 
 
 def test_engine_configures_the_model_base(sql_app):

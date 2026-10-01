@@ -1,6 +1,7 @@
 import importlib
 import sys
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,9 @@ from alembic.util import CommandError
 
 from qivo.cli.init import init_command
 from qivo.db.sql import AlembicMigrations, MigrationConfig, SQLAlchemyConfig
+from qivo.db.sql.sessions import prune_sessions, session_model
+
+_SESSION_TABLE = "qivo_sessions"
 
 
 @click.group()
@@ -37,14 +41,30 @@ def _migration_options(function):
     return function
 
 
-def _load_migrations(
+@dataclass(frozen=True)
+class ProjectSettings:
+    database_url: str
+    engine_options: dict[str, Any]
+    model_base: Any
+    session_table: str
+    migrations_directory: Path
+    compare_type: bool
+    render_as_batch: bool
+
+    def create_engine(self):
+        return SQLAlchemyConfig(self.database_url, self.engine_options).create_engine()
+
+
+def _load_project(
     config_path: Path,
     database_url: str | None,
     model_base: str | None,
     model_modules: tuple[str, ...],
     migrations_dir: Path | None,
     compare_type: bool | None,
-) -> AlembicMigrations:
+) -> ProjectSettings:
+    """Resolve qivo.toml and the command flags into everything a command needs."""
+
     config_path = config_path.resolve()
     project_config: dict[str, Any] = {}
     if config_path.exists():
@@ -53,6 +73,7 @@ def _load_migrations(
 
     sqlalchemy_options = project_config.get("sqlalchemy", {})
     migration_options = project_config.get("migrations", {})
+    session_options = project_config.get("session", {})
     resolved_database_url = database_url or sqlalchemy_options.get(
         "url", "sqlite:///app.db"
     )
@@ -65,6 +86,7 @@ def _load_migrations(
     resolved_directory = migrations_dir or Path(
         migration_options.get("directory", "migrations")
     )
+    session_table = session_options.get("table", _SESSION_TABLE)
 
     project_root = str(config_path.parent)
     if project_root not in sys.path:
@@ -84,21 +106,34 @@ def _load_migrations(
             f"Configured model base {resolved_model_base!r} has no metadata"
         )
 
-    engine = SQLAlchemyConfig(
-        resolved_database_url,
-        sqlalchemy_options.get("engine_options", {}),
-    ).create_engine()
+    if session_options.get("enabled"):
+        # The app code never runs here, so the table has to be registered by hand
+        # for the migration to include it.
+        session_model(model_base_object, session_table)
+
+    return ProjectSettings(
+        database_url=resolved_database_url,
+        engine_options=sqlalchemy_options.get("engine_options", {}),
+        model_base=model_base_object,
+        session_table=session_table,
+        migrations_directory=resolved_directory,
+        compare_type=(
+            compare_type
+            if compare_type is not None
+            else migration_options.get("compare_type", True)
+        ),
+        render_as_batch=migration_options.get("render_as_batch", True),
+    )
+
+
+def _load_migrations(settings: ProjectSettings) -> AlembicMigrations:
     return AlembicMigrations(
-        engine,
-        metadata=metadata,
+        settings.create_engine(),
+        metadata=settings.model_base.metadata,
         config=MigrationConfig(
-            directory=resolved_directory,
-            compare_type=(
-                compare_type
-                if compare_type is not None
-                else migration_options.get("compare_type", True)
-            ),
-            render_as_batch=migration_options.get("render_as_batch", True),
+            directory=settings.migrations_directory,
+            compare_type=settings.compare_type,
+            render_as_batch=settings.render_as_batch,
         ),
     )
 
@@ -205,12 +240,14 @@ def _run_migration_command(
     migrations = None
     try:
         migrations = _load_migrations(
-            config,
-            database_url,
-            model_base,
-            models,
-            migrations_dir,
-            compare_type,
+            _load_project(
+                config,
+                database_url,
+                model_base,
+                models,
+                migrations_dir,
+                compare_type,
+            )
         )
         action(migrations)
     except Exception as error:
@@ -218,6 +255,41 @@ def _run_migration_command(
     finally:
         if migrations is not None:
             migrations.engine.dispose()
+
+
+@cli.command("sessions:prune")
+@_migration_options
+def sessions_prune(
+    config: Path,
+    database_url: str | None,
+    model_base: str | None,
+    models: tuple[str, ...],
+    migrations_dir: Path | None,
+    compare_type: bool | None,
+) -> None:
+    """Delete the expired rows of the session table."""
+    engine = None
+    try:
+        settings = _load_project(
+            config,
+            database_url,
+            model_base,
+            models,
+            migrations_dir,
+            compare_type,
+        )
+        engine = settings.create_engine()
+        session_model(settings.model_base, settings.session_table)
+        removed = prune_sessions(settings.model_base, engine)
+    except click.ClickException:
+        raise
+    except Exception as error:
+        raise click.ClickException(str(error)) from error
+    finally:
+        if engine is not None:
+            engine.dispose()
+
+    click.echo(f"Removed {removed} expired session(s).")
 
 
 if __name__ == "__main__":
