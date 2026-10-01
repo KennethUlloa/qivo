@@ -1,7 +1,7 @@
 from abc import abstractmethod
 from dataclasses import dataclass
 from functools import wraps
-from typing import TYPE_CHECKING, Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol
 
 from werkzeug.exceptions import Forbidden, Unauthorized
 
@@ -9,43 +9,90 @@ if TYPE_CHECKING:
     from qivo import Qivo
 
 
-@dataclass
-class Authenticated:
-    permissions: list[str]
+class Authenticated(Protocol):
+    def get_id(self) -> str:
+        raise NotImplementedError
+
+    def is_active(self) -> bool:
+        raise NotImplementedError
+
+    def get_permissions(self) -> list[str]:
+        raise NotImplementedError
 
 
 class Authenticator:
-    def is_authenticated(self) -> bool:
-        return False
+    @abstractmethod
+    def require_authentication(self) -> None:
+        raise NotImplementedError
 
-    def authenticate(self):
-        if not self.is_authenticated():
-            raise Unauthorized()
+    @abstractmethod
+    def authenticate(self, data: Any) -> Authenticated:
+        raise NotImplementedError
 
     @abstractmethod
     def authenticated(self) -> Authenticated:
         raise NotImplementedError
 
+    @abstractmethod
+    def permissions(self) -> list[str]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def has_permission(self, permission: str) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def logout(self) -> None:
+        raise NotImplementedError
+
 
 class Policy:
     def check(self, authenticator: Authenticator):
-        pass
+        raise NotImplementedError
 
 
-class WithAll(Policy):
+class PermissionPolicy(Policy):
+    permission: str
+
+    def __init__(self, permission: str):
+        self.permission = permission
+
+
+class WithAny(PermissionPolicy):
     permissions: list[str]
 
     def __init__(self, permissions: list[str]):
         self.permissions = permissions
 
     def check(self, authenticator: Authenticator):
-        permissions = self.get_permissions(authenticator)
+        if not any(
+            authenticator.has_permission(permission) for permission in self.permissions
+        ):
+            raise Unauthorized()
 
-        if not all(permission in permissions for permission in self.permissions):
+
+class WithAll(PermissionPolicy):
+    permissions: list[str]
+
+    def __init__(self, permissions: list[str]):
+        self.permissions = permissions
+
+    def check(self, authenticator: Authenticator):
+        if not all(
+            authenticator.has_permission(permission) for permission in self.permissions
+        ):
             raise Forbidden()
 
-    def get_permissions(self, authenticator: Authenticator):
-        return authenticator.authenticated().permissions
+
+class WithOne(PermissionPolicy):
+    permission: str
+
+    def __init__(self, permission: str):
+        self.permission = permission
+
+    def check(self, authenticator: Authenticator):
+        if not authenticator.has_permission(self.permission):
+            raise Forbidden()
 
 
 class AuthorizationExtension:
@@ -57,7 +104,7 @@ class AuthorizationExtension:
         options: Mapping[str, Any],
     ) -> Callable:
         auth = options.get("auth", False)
-        policies = options.get("policies")
+        policies: list[Policy] = options.get("policies")
 
         if not auth and not policies:
             return view_func
@@ -66,7 +113,7 @@ class AuthorizationExtension:
         def wrapper(*args, **kwargs):
             authenticator = app.guard(options.get("guard"))
             if auth or policies:
-                authenticator.authenticate()
+                authenticator.require_authentication()
 
             for policy in policies or ():
                 policy.check(authenticator)

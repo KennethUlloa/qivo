@@ -3,7 +3,9 @@ from datetime import timedelta
 from typing import Any, Protocol
 
 from flask.sessions import SessionInterface
+from flask import Flask, g
 from sqlalchemy import Engine
+from sqlalchemy.orm import sessionmaker
 
 from qivo.db.sql import Model, SQLAlchemyConfig, close_session
 from qivo.db.sql.sessions import (
@@ -58,7 +60,7 @@ class SQLEngine:
 
         self.models += new_models
 
-    def init_app(self, app: ConfigurableApp) -> None:
+    def init_app(self, app: Flask) -> None:
         if self.app is not None and self.app is not app:
             raise RuntimeError("An SQLEngine instance can be attached to only one app")
 
@@ -82,6 +84,11 @@ class SQLEngine:
         self.app = app
         app.extensions["qivo.sql"] = self
         app.teardown_request(self._close_sessions)
+
+        @app.before_request
+        def _attach_session_factory():
+            g.session_factory = sessionmaker(self.engine)
+        
 
     def _close_sessions(self, exception: BaseException | None = None) -> None:
         for model in self.models:

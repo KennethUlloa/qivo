@@ -68,7 +68,10 @@ class Qivo:
 
     def guard(self, name: str | None = None):
         guard_name = name or self.default_guard
-        return self.guards[guard_name]
+        guard = self.guards[guard_name]
+        if guard is None:
+            raise RuntimeError(f"Guard '{guard_name}' is not registered")
+        return guard
 
     def _serialize_view_response(self, rv):
         target = rv
