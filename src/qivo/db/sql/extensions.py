@@ -1,14 +1,18 @@
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
 from sqlalchemy import Engine
 
-from qivo.db.sql import Model, SQLAlchemyConfig
+from qivo.db.sql import Model, SQLAlchemyConfig, close_session
 
 
 class ConfigurableApp(Protocol):
     config: Mapping[str, Any]
     extensions: dict[str, Any]
+
+    def teardown_request(
+        self, func: Callable[[BaseException | None], Any]
+    ) -> Any: ...
 
 
 class SQLEngine:
@@ -44,7 +48,12 @@ class SQLEngine:
         self.model.configure(self.engine, **session_options)
         self.app = app
         app.extensions["qivo.sql"] = self
+        app.teardown_request(self._close_sessions)
+
+    def _close_sessions(self, exception: BaseException | None = None) -> None:
+        close_session(self.model)
 
     def dispose(self) -> None:
+        close_session(self.model)
         if self.engine is not None:
             self.engine.dispose()

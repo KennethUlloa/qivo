@@ -1,0 +1,33 @@
+# This workflow runs the test suite on every push and pull request.
+
+name: Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "x"
+      - name: Install uv
+        run: |
+          python3 -m pip install
+          uv
+      - name: Install the project
+        run: uv sync --group dev
+      - name: Run the test suite
+        run: uv run pytest

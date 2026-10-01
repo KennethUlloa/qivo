@@ -112,15 +112,15 @@ or `@blueprint.route(...)`; Flask handles registration and lifecycle as usual.
 
 Configure the database declaratively in Flask, then attach the SQL extension.
 `SQLEngine` reads the URL, engine options, and session options from `app.config`
-and configures the model base automatically. Each terminal query opens and closes
-its own session:
+and configures the model base automatically:
 
 ```python
 from flask import Flask
+from sqlalchemy import delete
 from sqlalchemy.orm import Mapped, mapped_column
 
 from qivo import Qivo
-from qivo.db.sql import Model
+from qivo.db.sql import Model, close_session, get_session, transaction
 from qivo.db.sql.extensions import SQLEngine
 
 app = Flask(__name__)
@@ -156,9 +156,66 @@ active_admins = User.q.where(User.name == "admin").where(
 ).all()
 ```
 
-Use eager loading for relationships that must be accessed after a query returns,
-because its session is closed when the operation completes. `SQLEngine` does not
-create tables automatically; use the migration commands for schema changes.
+Queries run on a shared read session that stays open while the request does, so
+a returned instance keeps its relationships available:
+
+```python
+user = User.q.where(User.name == "admin").first()
+user.roles  # Loaded from the database on first access.
+```
+
+Outside a request, close it explicitly with `close_session()` or call
+`SQLEngine.dispose()`. `SQLEngine` does not create tables automatically; use the
+migration commands for schema changes.
+
+### Writes and Transactions
+
+Outside a transaction, `save()` and `delete()` use their own connection and
+commit only the instance and the relationships it holds. `save()` returns the
+same instance, and objects left unsaved on the read session raise an error when
+it is closed.
+
+Inside `transaction()` every query and write shares one session and connection.
+`save()` and `delete()` flush instead of committing, so the whole block commits
+on exit or rolls back as a unit:
+
+```python
+from qivo.db.sql import transaction
+
+with transaction() as t:
+    user = User.q.where(User.name == "admin").first()
+    user.name = "root"
+    user.q.save()  # Committed when the block exits.
+```
+
+A nested `transaction()` joins the session of the enclosing block; the real
+commit happens when the outermost block exits. An instance loaded before the
+block keeps its identity and moves into the transaction session, so the variable
+you already have is the one that gets saved. On a successful commit that session
+becomes the shared read session, which keeps instances usable after the block:
+
+```python
+with transaction() as t:
+    user = User.q.where(User.name == "admin").first()
+    user.q.save()
+
+user.roles  # Still loadable after the block.
+```
+
+Use the yielded session for anything the query API does not cover, such as bulk
+statements or `session.add()`:
+
+```python
+with transaction() as t:
+    t.add(Role(name="admin"))
+    t.execute(delete(Role).where(Role.name == "obsolete"))
+```
+
+With several model bases, pass the base explicitly: `transaction(OtherBase)`.
+
+For an isolated declarative base, build one with `model_base()` and hand it to
+`SQLEngine(app, model=Base)`. Without an argument, `transaction()`, `get_session()`
+and `close_session()` target the most recently configured base.
 
 ## Migrations
 
