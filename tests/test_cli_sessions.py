@@ -211,3 +211,56 @@ def test_migrate_creates_the_session_table_when_enabled(tmp_path):
     assert result.exit_code == 0, result.output
     assert "create_table" in latest_revision(tmp_path)
     assert "qivo_sessions" in latest_revision(tmp_path)
+
+
+def test_migrate_autogenerates_from_multiple_model_bases(tmp_path):
+    config = build_project(tmp_path, session_enabled=False)
+    package = package_of(tmp_path)
+    audit_package = tmp_path / package / "audit"
+    audit_package.mkdir()
+    (audit_package / "__init__.py").write_text("", encoding="utf-8")
+    (audit_package / "models.py").write_text(
+        textwrap.dedent(
+            """
+            from sqlalchemy.orm import Mapped, mapped_column
+
+            from qivo.db.sql import model_base
+
+            Base = model_base("AuditBase")
+
+
+            class AuditLog(Base):
+                __tablename__ = "audit_logs"
+
+                id: Mapped[int] = mapped_column(primary_key=True)
+            """
+        ),
+        encoding="utf-8",
+    )
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            f'model_base = "{package}.models:Base"',
+            "model_bases = "
+            f'["{package}.models:Base", "{package}.audit.models:Base"]',
+        ),
+        encoding="utf-8",
+    )
+    remove_database(tmp_path)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "migrate",
+            "--config",
+            str(config),
+            "--migrations-dir",
+            str(tmp_path / "migrations"),
+            "--message",
+            "initial",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    revision = latest_revision(tmp_path)
+    assert "tasks" in revision
+    assert "audit_logs" in revision

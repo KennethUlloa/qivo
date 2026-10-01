@@ -1,4 +1,4 @@
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import timedelta
 from typing import Any, Protocol
 
@@ -27,14 +27,36 @@ class ConfigurableApp(Protocol):
 
 class SQLEngine:
     def __init__(
-        self, app: ConfigurableApp | None = None, *, model: type[Model] = Model
+        self,
+        app: ConfigurableApp | None = None,
+        *,
+        model: type[Model] | None = None,
+        models: Sequence[type[Model]] | None = None,
     ):
+        if model is not None and models is not None:
+            raise ValueError("Configure either model or models, not both")
+
         self.app: ConfigurableApp | None = None
-        self.model = model
+        self.models = tuple(models) if models is not None else (model or Model,)
+        if not self.models:
+            raise ValueError("At least one model base must be configured")
+        self.model = self.models[0]
         self.engine: Engine | None = None
 
         if app is not None:
             self.init_app(app)
+
+    def configure_models(self, *models: type[Model]) -> None:
+        if not models:
+            raise ValueError("At least one model base must be configured")
+
+        new_models = tuple(model for model in models if model not in self.models)
+        if self.engine is not None:
+            session_options = self.app.config.get("SQLALCHEMY_SESSION_OPTIONS", {})
+            for model in new_models:
+                model.configure(self.engine, **session_options)
+
+        self.models += new_models
 
     def init_app(self, app: ConfigurableApp) -> None:
         if self.app is not None and self.app is not app:
@@ -55,16 +77,18 @@ class SQLEngine:
         engine_options = app.config.get("SQLALCHEMY_ENGINE_OPTIONS", {})
         session_options = app.config.get("SQLALCHEMY_SESSION_OPTIONS", {})
         self.engine = SQLAlchemyConfig(database_url, engine_options).create_engine()
-        self.model.configure(self.engine, **session_options)
+        for model in self.models:
+            model.configure(self.engine, **session_options)
         self.app = app
         app.extensions["qivo.sql"] = self
         app.teardown_request(self._close_sessions)
 
     def _close_sessions(self, exception: BaseException | None = None) -> None:
-        close_session(self.model)
+        for model in self.models:
+            close_session(model)
 
     def dispose(self) -> None:
-        close_session(self.model)
+        self._close_sessions()
         if self.engine is not None:
             self.engine.dispose()
 

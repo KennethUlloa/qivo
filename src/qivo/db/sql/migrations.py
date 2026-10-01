@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -72,7 +73,7 @@ class AlembicMigrations:
     def __init__(
         self,
         engine: Engine,
-        metadata: MetaData | None = None,
+        metadata: MetaData | Sequence[MetaData] | None = None,
         config: MigrationConfig | None = None,
     ):
         if metadata is None:

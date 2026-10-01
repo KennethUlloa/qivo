@@ -46,6 +46,7 @@ class ProjectSettings:
     database_url: str
     engine_options: dict[str, Any]
     model_base: Any
+    metadata: Any
     session_table: str
     migrations_directory: Path
     compare_type: bool
@@ -77,12 +78,28 @@ def _load_project(
     resolved_database_url = database_url or sqlalchemy_options.get(
         "url", "sqlite:///app.db"
     )
-    resolved_model_modules = model_modules or tuple(
-        sqlalchemy_options.get("models", ["app.models"])
-    )
-    resolved_model_base = model_base or sqlalchemy_options.get(
-        "model_base", "qivo.db.sql:Model"
-    )
+    configured_model_modules = sqlalchemy_options.get("models")
+    if model_modules:
+        resolved_model_modules = model_modules
+    elif configured_model_modules is not None:
+        resolved_model_modules = tuple(configured_model_modules)
+    elif configured_model_bases is not None:
+        resolved_model_modules = ()
+    else:
+        resolved_model_modules = ("app.models",)
+    configured_model_bases = sqlalchemy_options.get("model_bases")
+    if model_base is not None:
+        resolved_model_bases = (model_base,)
+    elif configured_model_bases is None:
+        resolved_model_bases = (
+            sqlalchemy_options.get("model_base", "qivo.db.sql:Model"),
+        )
+    elif isinstance(configured_model_bases, list):
+        resolved_model_bases = tuple(configured_model_bases)
+    else:
+        raise ValueError("sqlalchemy.model_bases must be an array")
+    if not resolved_model_bases:
+        raise ValueError("At least one model base must be configured")
     resolved_directory = migrations_dir or Path(
         migration_options.get("directory", "migrations")
     )
@@ -94,27 +111,35 @@ def _load_project(
     for module_name in resolved_model_modules:
         importlib.import_module(module_name)
 
-    module_name, separator, attribute_path = resolved_model_base.partition(":")
-    if not separator:
-        raise ValueError("model_base must use 'module:attribute' syntax")
-    model_base_object: Any = importlib.import_module(module_name)
-    for attribute in attribute_path.split("."):
-        model_base_object = getattr(model_base_object, attribute)
-    metadata = getattr(model_base_object, "metadata", None)
-    if metadata is None:
-        raise ValueError(
-            f"Configured model base {resolved_model_base!r} has no metadata"
-        )
+    model_bases: list[Any] = []
+    metadatas: list[Any] = []
+    for model_base_path in resolved_model_bases:
+        module_name, separator, attribute_path = model_base_path.partition(":")
+        if not separator:
+            raise ValueError("model_base must use 'module:attribute' syntax")
+        model_base_object: Any = importlib.import_module(module_name)
+        for attribute in attribute_path.split("."):
+            model_base_object = getattr(model_base_object, attribute)
+        metadata = getattr(model_base_object, "metadata", None)
+        if metadata is None:
+            raise ValueError(
+                f"Configured model base {model_base_path!r} has no metadata"
+            )
+        model_bases.append(model_base_object)
+        metadatas.append(metadata)
+
+    metadata = metadatas[0] if len(metadatas) == 1 else tuple(metadatas)
 
     if session_options.get("enabled"):
         # The app code never runs here, so the table has to be registered by hand
-        # for the migration to include it.
-        session_model(model_base_object, session_table)
+        # for the migration to include it. Keep it on the primary model base.
+        session_model(model_bases[0], session_table)
 
     return ProjectSettings(
         database_url=resolved_database_url,
         engine_options=sqlalchemy_options.get("engine_options", {}),
-        model_base=model_base_object,
+        model_base=model_bases[0],
+        metadata=metadata,
         session_table=session_table,
         migrations_directory=resolved_directory,
         compare_type=(
@@ -129,7 +154,7 @@ def _load_project(
 def _load_migrations(settings: ProjectSettings) -> AlembicMigrations:
     return AlembicMigrations(
         settings.create_engine(),
-        metadata=settings.model_base.metadata,
+        metadata=settings.metadata,
         config=MigrationConfig(
             directory=settings.migrations_directory,
             compare_type=settings.compare_type,

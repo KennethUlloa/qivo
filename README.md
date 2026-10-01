@@ -19,7 +19,17 @@ The scaffold contains a minimal Flask todo list with a `Task` model, the four CR
 endpoints, `qivo.toml`, and one HTML template at `app/template/app.html`, loaded
 with Flask's normal `render_template` mechanism. Existing files are left untouched.
 Edit the TOML settings to configure the database URL, model modules, model base,
-and migrations directory.
+and migrations directory. To generate migrations from multiple independent
+declarative bases without loading the Flask application, list each base as
+`module:attribute` in `sqlalchemy.model_bases`:
+
+```toml
+[sqlalchemy]
+model_bases = ["app.models:Base", "app.audit.models:Base"]
+```
+
+The legacy `model_base` setting and the `--model-base` option still select a
+single base; specifying `--model-base` overrides the configured list.
 
 ```console
 uv run qivo migrate --message "initial schema"
