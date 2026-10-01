@@ -12,7 +12,7 @@ from flask.sessions import SessionInterface, SessionMixin
 from sqlalchemy import JSON, DateTime, String, delete, or_, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.orm import Session, mapped_column, sessionmaker
+from sqlalchemy.orm import Mapped, Session, mapped_column, sessionmaker
 
 if TYPE_CHECKING:
     from qivo.db.sql import Model
@@ -26,53 +26,37 @@ _MISSING_TABLE_HINTS = ("no such table", "does not exist", "undefined table")
 class SessionConfig:
     """How a server side session is stored and how long its rows live."""
 
-    table: str = "qivo_sessions"
     lifetime: timedelta = timedelta(days=31)
     cleanup_interval: int = 100
 
 
-def session_model(base: type["Model"], table: str = "qivo_sessions") -> type["Model"]:
-    """Build, and remember on the base, the model that holds the session rows."""
+class FlaskSessionModel:
+    """Columns shared by an app's explicitly declared Flask session model."""
 
-    cached = base.__dict__.get("__qivo_session_model__")
-    if cached is not None:
-        if cached.__tablename__ != table:
-            raise RuntimeError(
-                f"The model base {base.__name__} already stores sessions in "
-                f"{cached.__tablename__!r}; use one model base per session table"
-            )
-        return cached
+    __qivo_flask_session_model__ = True
 
-    model = type(
-        f"{base.__name__}Session",
-        (base,),
-        {
-            "__tablename__": table,
-            "sid": mapped_column(String(_MAX_SID_LENGTH), primary_key=True),
-            "data": mapped_column(JSON, nullable=False),
-            "expires_at": mapped_column(DateTime(timezone=True), index=True),
-        },
+    sid: Mapped[str] = mapped_column(String(_MAX_SID_LENGTH), primary_key=True)
+    data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
     )
-    base.__qivo_session_model__ = model
-    return model
 
 
 def prune_sessions(
-    base: type["Model"],
+    model: type["Model"],
     factory: Engine | sessionmaker[Session] | None = None,
     *,
     now: datetime | None = None,
 ) -> int:
     """Delete the expired session rows of the model base and count them."""
 
-    model = base.__dict__.get("__qivo_session_model__")
-    if model is None:
+    if not getattr(model, "__qivo_flask_session_model__", False):
         raise RuntimeError(
-            f"The model base {base.__name__} has no session table; attach "
-            "DatabaseSessions to the app or enable it in qivo.toml"
+            f"{model.__name__} is not a Flask session model; inherit from "
+            "FlaskSessionModel"
         )
 
-    return SessionStore(model, session_factory(base, factory)).prune(now)
+    return SessionStore(model, session_factory(model, factory)).prune(now)
 
 
 class ServerSideSession(dict, SessionMixin):

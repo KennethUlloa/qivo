@@ -9,7 +9,7 @@ from click.testing import CliRunner
 from sqlalchemy import create_engine
 
 from qivo.cli import cli
-from qivo.db.sql import session_model
+from qivo.db.sql import FlaskSessionModel
 
 BASE_CONFIG = """
 [application]
@@ -17,17 +17,10 @@ name = "Sesiones"
 
 [sqlalchemy]
 url = "sqlite:///{url}"
-models = ["{package}.models"]
-model_base = "{package}.models:Base"
+model_bases = ["{package}.models:Base"]
 
 [migrations]
 directory = "migrations"
-"""
-
-SESSION_SECTION = """
-[session]
-enabled = {enabled}
-table = "qivo_sessions"
 """
 
 MODELS = """
@@ -50,27 +43,34 @@ def models_of(config: Path) -> str:
 
 
 def package_of(root: Path) -> str:
-    """Name the package after the directory, so every test imports its own copy.
-
-    Python would otherwise reuse a module whose session table is already
-    registered, and the migration would see the table even when it is disabled.
-    """
+    """Give every test project a unique import path and isolated model metadata."""
 
     return "tienda_" + re.sub(r"\W", "_", root.name)
 
 
-def build_project(root: Path, *, session_enabled: bool) -> Path:
+def build_project(root: Path, *, register_session: bool) -> Path:
     """Write a throwaway project with a qivo.toml and its models."""
 
     package = package_of(root)
     directory = root / package
     directory.mkdir()
     (directory / "__init__.py").write_text("", encoding="utf-8")
-    (directory / "models.py").write_text(textwrap.dedent(MODELS), encoding="utf-8")
+    models_source = textwrap.dedent(MODELS)
+    if register_session:
+        models_source += textwrap.dedent(
+            """
+
+            from qivo.db.sql import FlaskSessionModel
+
+
+            class FlaskSessionRow(Base, FlaskSessionModel):
+                __tablename__ = "qivo_sessions"
+            """
+        )
+    (directory / "models.py").write_text(models_source, encoding="utf-8")
     config = root / "qivo.toml"
     config.write_text(
-        BASE_CONFIG.format(url=(root / "app.db").as_posix(), package=package)
-        + SESSION_SECTION.format(enabled=str(session_enabled).lower()),
+        BASE_CONFIG.format(url=(root / "app.db").as_posix(), package=package),
         encoding="utf-8",
     )
 
@@ -82,8 +82,6 @@ def migrate_arguments(config: Path) -> list[str]:
         "migrate",
         "--config",
         str(config),
-        "--models",
-        models_of(config),
         "--migrations-dir",
         str(config.parent / "migrations"),
         "--message",
@@ -107,13 +105,12 @@ def remove_database(root: Path) -> None:
 
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch):
-    config = build_project(tmp_path, session_enabled=False)
+    config = build_project(tmp_path, register_session=True)
     monkeypatch.syspath_prepend(str(tmp_path))
 
     engine = create_engine(f"sqlite:///{tmp_path / 'app.db'}")
     base = import_module(models_of(config)).Base
 
-    session_model(base, "qivo_sessions")
     base.metadata.create_all(engine)
     try:
         yield config, engine, base
@@ -123,7 +120,7 @@ def project(tmp_path: Path, monkeypatch):
 
 
 def expired_row(engine, base, sid, *, minutes_ago):
-    model = session_model(base, "qivo_sessions")
+    model = flask_session_row(base)
     with engine.begin() as connection:
         connection.execute(
             model.__table__.insert(),
@@ -137,9 +134,19 @@ def expired_row(engine, base, sid, *, minutes_ago):
 
 
 def count_rows(engine, base):
-    model = session_model(base, "qivo_sessions")
+    model = flask_session_row(base)
     with engine.connect() as connection:
         return len(connection.execute(model.__table__.select()).all())
+
+
+def flask_session_row(base):
+    models = [
+        mapper.class_
+        for mapper in base.registry.mappers
+        if getattr(mapper.class_, "__qivo_flask_session_model__", False)
+    ]
+    assert len(models) == 1
+    return models[0]
 
 
 def test_sessions_prune_removes_the_expired_rows(project):
@@ -148,7 +155,7 @@ def test_sessions_prune_removes_the_expired_rows(project):
 
     result = CliRunner().invoke(
         cli,
-        ["sessions:prune", "--config", str(config), "--models", models_of(config)],
+        ["sessions:prune", "--config", str(config)],
     )
 
     assert result.exit_code == 0, result.output
@@ -159,7 +166,7 @@ def test_sessions_prune_removes_the_expired_rows(project):
 def test_sessions_prune_keeps_the_live_rows(project):
     config, engine, base = project
     expired_row(engine, base, "vencida", minutes_ago=5)
-    model = session_model(base, "qivo_sessions")
+    model = flask_session_row(base)
     with engine.begin() as connection:
         connection.execute(
             model.__table__.insert(),
@@ -172,11 +179,55 @@ def test_sessions_prune_keeps_the_live_rows(project):
 
     result = CliRunner().invoke(
         cli,
-        ["sessions:prune", "--config", str(config), "--models", models_of(config)],
+        ["sessions:prune", "--config", str(config)],
     )
 
     assert result.exit_code == 0, result.output
     assert count_rows(engine, base) == 1
+
+
+def test_sessions_prune_finds_the_flask_session_model_on_a_secondary_base(
+    tmp_path, monkeypatch
+):
+    config = build_project(tmp_path, register_session=False)
+    package = package_of(tmp_path)
+    audit_package = tmp_path / package / "audit"
+    audit_package.mkdir()
+    (audit_package / "__init__.py").write_text("", encoding="utf-8")
+    (audit_package / "models.py").write_text(
+        textwrap.dedent(
+            """
+            from qivo.db.sql import FlaskSessionModel, model_base
+
+            Base = model_base("SessionBase")
+
+
+            class FlaskSessionRow(Base, FlaskSessionModel):
+                __tablename__ = "qivo_sessions"
+            """
+        ),
+        encoding="utf-8",
+    )
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            f'model_bases = ["{package}.models:Base"]',
+            "model_bases = "
+            f'["{package}.models:Base", "{package}.audit.models:Base"]',
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    base = import_module(f"{package}.audit.models").Base
+    engine = create_engine(f"sqlite:///{tmp_path / 'app.db'}")
+    base.metadata.create_all(engine)
+    expired_row(engine, base, "vencida", minutes_ago=5)
+
+    result = CliRunner().invoke(cli, ["sessions:prune", "--config", str(config)])
+
+    assert result.exit_code == 0, result.output
+    assert count_rows(engine, base) == 0
+    base.metadata.drop_all(engine)
+    engine.dispose()
 
 
 def test_sessions_prune_reports_a_broken_config(tmp_path):
@@ -191,8 +242,17 @@ def test_sessions_prune_reports_a_broken_config(tmp_path):
     assert "model_base must use 'module:attribute' syntax" in result.output
 
 
+def test_sessions_prune_requires_an_explicit_flask_session_class(tmp_path):
+    config = build_project(tmp_path, register_session=False)
+
+    result = CliRunner().invoke(cli, ["sessions:prune", "--config", str(config)])
+
+    assert result.exit_code != 0
+    assert "inherit from FlaskSessionModel" in result.output
+
+
 def test_migrate_leaves_the_session_table_out_by_default(tmp_path):
-    config = build_project(tmp_path, session_enabled=False)
+    config = build_project(tmp_path, register_session=False)
     remove_database(tmp_path)
 
     result = CliRunner().invoke(cli, migrate_arguments(config))
@@ -202,8 +262,8 @@ def test_migrate_leaves_the_session_table_out_by_default(tmp_path):
     assert "qivo_sessions" not in latest_revision(tmp_path)
 
 
-def test_migrate_creates_the_session_table_when_enabled(tmp_path):
-    config = build_project(tmp_path, session_enabled=True)
+def test_migrate_creates_the_registered_flask_session_table(tmp_path):
+    config = build_project(tmp_path, register_session=True)
     remove_database(tmp_path)
 
     result = CliRunner().invoke(cli, migrate_arguments(config))
@@ -214,7 +274,7 @@ def test_migrate_creates_the_session_table_when_enabled(tmp_path):
 
 
 def test_migrate_autogenerates_from_multiple_model_bases(tmp_path):
-    config = build_project(tmp_path, session_enabled=False)
+    config = build_project(tmp_path, register_session=False)
     package = package_of(tmp_path)
     audit_package = tmp_path / package / "audit"
     audit_package.mkdir()
@@ -239,7 +299,7 @@ def test_migrate_autogenerates_from_multiple_model_bases(tmp_path):
     )
     config.write_text(
         config.read_text(encoding="utf-8").replace(
-            f'model_base = "{package}.models:Base"',
+            f'model_bases = ["{package}.models:Base"]',
             "model_bases = "
             f'["{package}.models:Base", "{package}.audit.models:Base"]',
         ),

@@ -10,9 +10,7 @@ from alembic.util import CommandError
 
 from qivo.cli.init import init_command
 from qivo.db.sql import AlembicMigrations, MigrationConfig, SQLAlchemyConfig
-from qivo.db.sql.sessions import prune_sessions, session_model
-
-_SESSION_TABLE = "qivo_sessions"
+from qivo.db.sql.sessions import prune_sessions
 
 
 @click.group()
@@ -45,9 +43,8 @@ def _migration_options(function):
 class ProjectSettings:
     database_url: str
     engine_options: dict[str, Any]
-    model_base: Any
+    model_bases: tuple[Any, ...]
     metadata: Any
-    session_table: str
     migrations_directory: Path
     compare_type: bool
     render_as_batch: bool
@@ -74,10 +71,10 @@ def _load_project(
 
     sqlalchemy_options = project_config.get("sqlalchemy", {})
     migration_options = project_config.get("migrations", {})
-    session_options = project_config.get("session", {})
     resolved_database_url = database_url or sqlalchemy_options.get(
         "url", "sqlite:///app.db"
     )
+    configured_model_bases = sqlalchemy_options.get("model_bases")
     configured_model_modules = sqlalchemy_options.get("models")
     if model_modules:
         resolved_model_modules = model_modules
@@ -87,7 +84,6 @@ def _load_project(
         resolved_model_modules = ()
     else:
         resolved_model_modules = ("app.models",)
-    configured_model_bases = sqlalchemy_options.get("model_bases")
     if model_base is not None:
         resolved_model_bases = (model_base,)
     elif configured_model_bases is None:
@@ -103,8 +99,6 @@ def _load_project(
     resolved_directory = migrations_dir or Path(
         migration_options.get("directory", "migrations")
     )
-    session_table = session_options.get("table", _SESSION_TABLE)
-
     project_root = str(config_path.parent)
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
@@ -130,17 +124,11 @@ def _load_project(
 
     metadata = metadatas[0] if len(metadatas) == 1 else tuple(metadatas)
 
-    if session_options.get("enabled"):
-        # The app code never runs here, so the table has to be registered by hand
-        # for the migration to include it. Keep it on the primary model base.
-        session_model(model_bases[0], session_table)
-
     return ProjectSettings(
         database_url=resolved_database_url,
         engine_options=sqlalchemy_options.get("engine_options", {}),
-        model_base=model_bases[0],
+        model_bases=tuple(model_bases),
         metadata=metadata,
-        session_table=session_table,
         migrations_directory=resolved_directory,
         compare_type=(
             compare_type
@@ -304,8 +292,26 @@ def sessions_prune(
             compare_type,
         )
         engine = settings.create_engine()
-        session_model(settings.model_base, settings.session_table)
-        removed = prune_sessions(settings.model_base, engine)
+        session_models = tuple(
+            dict.fromkeys(
+                mapper.class_
+                for base in settings.model_bases
+                for mapper in base.registry.mappers
+                if getattr(
+                    mapper.class_, "__qivo_flask_session_model__", False
+                )
+            )
+        )
+        if len(session_models) > 1:
+            raise RuntimeError(
+                "More than one configured model base registers a Flask session model"
+            )
+        if not session_models:
+            raise RuntimeError(
+                "No configured model base declares a Flask session model; "
+                "inherit from FlaskSessionModel"
+            )
+        removed = prune_sessions(session_models[0], engine)
     except click.ClickException:
         raise
     except Exception as error:

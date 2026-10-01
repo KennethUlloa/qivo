@@ -17,12 +17,6 @@ engine_options = {{}}
 directory = "migrations"
 compare_type = true
 render_as_batch = true
-
-[session]
-# Turn this on when the app attaches DatabaseSessions, so that the migration
-# commands create the table where the session is stored.
-enabled = false
-table = "qivo_sessions"
 """
 
 _APP_TEMPLATE = """from datetime import date

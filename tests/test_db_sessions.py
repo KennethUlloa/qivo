@@ -8,25 +8,30 @@ from sqlalchemy.exc import DBAPIError
 
 from qivo.db.sql import (
     DatabaseSessions,
+    FlaskSessionModel,
     SessionConfig,
     close_session,
     model_base,
     prune_sessions,
-    session_model,
 )
 from qivo.db.sql.extensions import SQLEngine
 from qivo.db.sql.sessions import ServerSideSession, SessionStore
 
 from conftest import Base, Unconfigured, build_app, independent_session
 
-SessionRow = session_model(Base)
+class SessionRow(Base, FlaskSessionModel):
+    __tablename__ = "qivo_sessions"
+
+
+class UnconfiguredSession(Unconfigured, FlaskSessionModel):
+    __tablename__ = "unconfigured_sessions"
 
 
 @pytest.fixture
 def session_app(tmp_path):
     app = build_app(tmp_path, QIVO_SESSION_LIFETIME=3600)
     db = SQLEngine(app, model=Base)
-    extension = DatabaseSessions(app, model=Base)
+    extension = DatabaseSessions(app, model=SessionRow)
     Base.metadata.create_all(db.engine)
 
     @app.get("/set/<value>")
@@ -306,10 +311,10 @@ def test_another_database_error_is_left_alone(tmp_path):
         store.load("cualquiera")
 
 
-def test_pruning_a_base_without_a_session_table_is_rejected(tmp_path):
+def test_pruning_a_non_session_model_is_rejected(tmp_path):
     build_app(tmp_path)
 
-    with pytest.raises(RuntimeError, match="has no session table"):
+    with pytest.raises(RuntimeError, match="not a Flask session model"):
         prune_sessions(Unconfigured, create_engine(f"sqlite:///{tmp_path / 'app.db'}"))
 
 
@@ -319,7 +324,9 @@ def test_the_sweep_deletes_the_expired_rows(session_app):
     insert_row(db.engine, "viva", {}, utcnow() + timedelta(days=1))
 
     sweeper = Flask(__name__)
-    DatabaseSessions(sweeper, model=Base, config=SessionConfig(cleanup_interval=1))
+    DatabaseSessions(
+        sweeper, model=SessionRow, config=SessionConfig(cleanup_interval=1)
+    )
 
     with sweeper.test_client() as client:
         client.get("/peek")
@@ -333,7 +340,7 @@ def test_the_sweep_can_be_turned_off(session_app):
 
     keeper = Flask(__name__)
     DatabaseSessions(
-        keeper, model=Base, config=SessionConfig(cleanup_interval=0)
+        keeper, model=SessionRow, config=SessionConfig(cleanup_interval=0)
     )
 
     with keeper.test_client() as client:
@@ -347,7 +354,7 @@ def test_prune_sessions_removes_only_the_expired_rows(session_app):
     insert_row(db.engine, "vencida", {}, utcnow() - timedelta(minutes=1))
     insert_row(db.engine, "viva", {}, utcnow() + timedelta(days=1))
 
-    assert prune_sessions(Base, db.engine) == 1
+    assert prune_sessions(SessionRow, db.engine) == 1
     assert [row.sid for row in rows(db.engine)] == ["viva"]
 
 
@@ -386,14 +393,14 @@ def test_an_unconfigured_model_base_is_rejected(tmp_path):
     app = build_app(tmp_path)
 
     with pytest.raises(RuntimeError, match="has no database attached"):
-        DatabaseSessions(app, model=Unconfigured)
+        DatabaseSessions(app, model=UnconfiguredSession)
 
 
 def test_a_second_extension_is_rejected(session_app):
     app, _, _ = session_app
 
     with pytest.raises(RuntimeError, match="already registered"):
-        DatabaseSessions(app, model=Base)
+        DatabaseSessions(app, model=SessionRow)
 
 
 def test_an_extension_attaches_to_only_one_app(session_app, tmp_path):
@@ -403,14 +410,12 @@ def test_an_extension_attaches_to_only_one_app(session_app, tmp_path):
         extension.init_app(build_app(tmp_path, "otra.db"))
 
 
-def test_another_table_name_on_the_same_base_is_rejected():
-    with pytest.raises(RuntimeError, match="already stores sessions"):
-        session_model(Base, "otras_sesiones")
-
-
-def test_the_table_name_can_be_configured(tmp_path, session_app, monkeypatch):
+def test_the_explicit_model_defines_the_table_name(tmp_path, session_app, monkeypatch):
     _, db, _ = session_app
     other_base = model_base("Other")
+    class OtherSession(other_base, FlaskSessionModel):
+        __tablename__ = "mis_sesiones"
+
     monkeypatch.setattr(
         other_base,
         "__qivo_session_factory__",
@@ -418,8 +423,8 @@ def test_the_table_name_can_be_configured(tmp_path, session_app, monkeypatch):
         raising=False,
     )
 
-    app = build_app(tmp_path, "otra.db", QIVO_SESSION_TABLE="mis_sesiones")
-    extension = DatabaseSessions(app, model=other_base)
+    app = build_app(tmp_path, "otra.db")
+    extension = DatabaseSessions(app, model=OtherSession)
     other_base.metadata.create_all(db.engine)
 
     @app.get("/set")

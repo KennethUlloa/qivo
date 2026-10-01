@@ -8,10 +8,10 @@ from sqlalchemy import Engine
 from qivo.db.sql import Model, SQLAlchemyConfig, close_session
 from qivo.db.sql.sessions import (
     DatabaseSessionInterface,
+    FlaskSessionModel,
     SessionConfig,
     SessionStore,
     session_factory,
-    session_model,
 )
 
 
@@ -105,9 +105,12 @@ class DatabaseSessions:
         self,
         app: ConfigurableApp | None = None,
         *,
-        model: type[Model] = Model,
+        model: type[Model],
         config: SessionConfig | None = None,
     ):
+        if not getattr(model, "__qivo_flask_session_model__", False):
+            raise TypeError("model must inherit from FlaskSessionModel")
+
         self.app: ConfigurableApp | None = None
         self.model = model
         self.config = config
@@ -132,9 +135,7 @@ class DatabaseSessions:
             return
 
         config = self._resolve_config(app)
-        store = SessionStore(
-            session_model(self.model, config.table), session_factory(self.model)
-        )
+        store = SessionStore(self.model, session_factory(self.model))
         interface = DatabaseSessionInterface(store, config)
 
         self.config = config
@@ -148,7 +149,6 @@ class DatabaseSessions:
         base = self.config or SessionConfig()
 
         return SessionConfig(
-            table=app.config.get("QIVO_SESSION_TABLE") or base.table,
             lifetime=_lifetime(
                 app.config.get("QIVO_SESSION_LIFETIME"), base.lifetime
             ),

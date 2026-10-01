@@ -234,7 +234,12 @@ to keep it in the database instead; the views keep using `session` and the cooki
 carries only an opaque id:
 
 ```python
-from qivo.db.sql import DatabaseSessions
+from qivo.db.sql import DatabaseSessions, FlaskSessionModel, model_base
+
+Base = model_base("Base")
+
+class FlaskSessionRow(Base, FlaskSessionModel):
+	__tablename__ = "qivo_sessions"
 
 app = Flask(__name__)
 app.config.from_mapping(
@@ -242,8 +247,8 @@ app.config.from_mapping(
     QIVO_SESSION_LIFETIME=60 * 60 * 24 * 14,  # 14 days, in seconds
 )
 qivo = Qivo(app)
-db = SQLEngine(app)
-sessions = DatabaseSessions(app)  # Without this the cookie keeps the session.
+db = SQLEngine(app, model=Base)
+sessions = DatabaseSessions(app, model=FlaskSessionRow)
 ```
 
 ```python
@@ -254,25 +259,26 @@ def counter():
     return {"views": session["views"]}
 ```
 
-The rows live in the tables of the same model base, so tell the migration commands
-about them with a `[session]` section in `qivo.toml` and create the table:
+Declare the Flask session row as a mapped class on the same base passed to
+`DatabaseSessions`, and make sure its base is listed in `sqlalchemy.model_bases`
+(or selected by `model_base`) in `qivo.toml`. The regular migration commands
+discover its table along with the other models:
+
+```toml
+[sqlalchemy]
+model_bases = ["app.models:Base"]
+```
 
 ```console
 uv run qivo migrate --message "session table"
 uv run qivo migrate:apply
 ```
 
-```toml
-[session]
-enabled = true
-table = "qivo_sessions"
-```
-
-`table` defaults to `qivo_sessions`, and `enabled` only matters for migrations:
-the commands do not run your app code, so they register the table from this
-section instead of finding it at runtime. With an isolated base, hand the same
-one to both extensions, `SQLEngine(app, model=Base)` and
-`DatabaseSessions(app, model=Base)`, so the table lands in that metadata.
+There is no separate session section. With an isolated base, use that base for
+both `SQLEngine(app, model=Base)` and `FlaskSessionRow`, then pass the mapped row
+to `DatabaseSessions(app, model=FlaskSessionRow)`. When using multiple bases,
+declare the Flask session model on exactly one configured base; `sessions:prune`
+finds it automatically.
 
 Expired rows are deleted by a sweep that runs once every
 `QIVO_SESSION_CLEANUP_INTERVAL` requests, one hundred by default, and on demand:
