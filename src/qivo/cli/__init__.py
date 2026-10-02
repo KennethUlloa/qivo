@@ -9,6 +9,7 @@ import click
 from alembic.util import CommandError
 
 from qivo.cli.init import init_command
+from qivo.cli.run import run_app
 from qivo.db.sql import AlembicMigrations, MigrationConfig, SQLAlchemyConfig
 from qivo.db.sql.sessions import prune_sessions
 
@@ -48,6 +49,7 @@ class ProjectSettings:
     migrations_directory: Path
     compare_type: bool
     render_as_batch: bool
+    import_path: str
 
     def create_engine(self):
         return SQLAlchemyConfig(self.database_url, self.engine_options).create_engine()
@@ -55,11 +57,11 @@ class ProjectSettings:
 
 def _load_project(
     config_path: Path,
-    database_url: str | None,
-    model_base: str | None,
-    model_modules: tuple[str, ...],
-    migrations_dir: Path | None,
-    compare_type: bool | None,
+    database_url: str | None = None,
+    model_base: str | None = None,
+    model_modules: tuple[str, ...] = (),
+    migrations_dir: Path | None = None,
+    compare_type: bool | None = None,
 ) -> ProjectSettings:
     """Resolve qivo.toml and the command flags into everything a command needs."""
 
@@ -124,6 +126,8 @@ def _load_project(
 
     metadata = metadatas[0] if len(metadatas) == 1 else tuple(metadatas)
 
+    import_path = project_config.get("application", {}).get("import_path")
+
     return ProjectSettings(
         database_url=resolved_database_url,
         engine_options=sqlalchemy_options.get("engine_options", {}),
@@ -136,6 +140,7 @@ def _load_project(
             else migration_options.get("compare_type", True)
         ),
         render_as_batch=migration_options.get("render_as_batch", True),
+        import_path=import_path,
     )
 
 
@@ -321,6 +326,26 @@ def sessions_prune(
             engine.dispose()
 
     click.echo(f"Removed {removed} expired session(s).")
+
+
+@cli.command("run")
+@click.argument("import_path", default=None)
+@click.option("--host", default="127.0.0.1")
+@click.option("--port", default=5000)
+@click.option("--debug", is_flag=True)
+def run_command(import_path: str, host: str, port: int, debug: bool) -> None:
+    settings = _load_project(
+        Path("qivo.toml")
+    )
+
+    import_path = import_path or settings.import_path
+
+    if not import_path:
+        raise click.ClickException(
+            "No import path provided and no import_path configured in qivo.toml"
+        )
+
+    run_app(import_path, host, port, debug)
 
 
 if __name__ == "__main__":

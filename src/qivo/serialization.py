@@ -1,4 +1,3 @@
-from dataclasses import fields, is_dataclass
 from datetime import date, datetime, time
 from decimal import Decimal
 from enum import Enum
@@ -16,7 +15,7 @@ type ValidTypes = Union[str, int, float, bool, dict, list, tuple, set, frozenset
 
 class Serializable(Protocol):
 
-    def __serialize__(self, serializer: Callable) -> ValidTypes: ...
+    def to_dict(self) -> ValidTypes: ...
 
 
 class SerializationRegistry:
@@ -37,17 +36,24 @@ class SerializationRegistry:
 
     def _is_subclass(self, item_type):
         for type_ in self._type_registry:
-            if issubclass(item_type, type_):
+            if self._matches_type(item_type, type_):
                 return True
 
         return False
+
+    @staticmethod
+    def _matches_type(item_type: Type, registered_type: Type) -> bool:
+        try:
+            return issubclass(item_type, registered_type)
+        except RecursionError:
+            return False
 
     def _get_serializer(self, item_type: Type):
         if item_type in self._type_registry:
             return self._type_registry[item_type]
 
         for type_ in self._type_registry:
-            if issubclass(item_type, type_):
+            if self._matches_type(item_type, type_):
                 return self._type_registry[type_]
 
     def __getitem__(self, item_type: Type):
@@ -57,18 +63,9 @@ class SerializationRegistry:
 class Serializer:
     def __init__(
         self,
-        registry: SerializationRegistry = None,
-        from_attributes: bool = False,
-        excluded_types_from_attributes: tuple = None,
+        registry: SerializationRegistry | None = None,
     ):
         self.registry = registry or SerializationRegistry()
-        self.from_attributes = from_attributes
-        self.excluded_types_from_attributes = excluded_types_from_attributes or (
-            str,
-            int,
-            float,
-            bool,
-        )
 
     def serialize(self, value: Union[Serializable, Any]) -> Any:
         if value is None:
@@ -77,14 +74,9 @@ class Serializer:
         if self.registry is not None and type(value) in self.registry:
             return self.registry[type(value)](value)
 
-        if hasattr(value, "__serialize__") and callable(value.__serialize__):
-            return value.__serialize__(self.serialize)
-
-        if is_dataclass(value) and not isinstance(value, type):
-            return {
-                field.name: self.serialize(getattr(value, field.name))
-                for field in fields(value)
-            }
+        to_dict = getattr(value, "to_dict", None)
+        if callable(to_dict):
+            return self.serialize(to_dict())
 
         if isinstance(value, dict):
             return {
@@ -100,37 +92,10 @@ class Serializer:
         if isinstance(value, (datetime, date, time)):
             return value.isoformat()
 
-        if isinstance(value, UUID):
+        if isinstance(value, (UUID, Decimal)):
             return str(value)
-
-        if isinstance(value, Decimal):
-            return str(value)
-
-        if self.from_attributes and not isinstance(
-            value, self.excluded_types_from_attributes
-        ):
-            return self._serialize_from_attributes(value)
 
         return value
-
-    def _serialize_from_attributes(self, item: Any) -> dict[str, Any]:
-        result = {}
-
-        for name in dir(item):
-            if name.startswith("_"):
-                continue
-
-            try:
-                value = getattr(item, name)
-            except AttributeError, RuntimeError:
-                continue
-
-            if isinstance(value, Callable):
-                continue
-
-            result[name] = self.serialize(value)
-
-        return result
 
 
 class SerializationExtension:

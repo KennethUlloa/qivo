@@ -15,6 +15,7 @@ from qivo.db.sql.auth import (
 )
 from qivo.db.sql.extensions import SQLEngine
 from qivo.guards import WithAll
+from qivo.serialization import Serializer
 
 
 def test_auth_relationships_and_timestamp_metadata(tmp_path):
@@ -51,6 +52,12 @@ def test_auth_relationships_and_timestamp_metadata(tmp_path):
             assert user.roles[0].permissions[0].updated_at is not None
             assert session.scalar(select(user_roles.c.created_at)) is not None
             assert session.scalar(select(role_permissions.c.created_at)) is not None
+            assert Serializer().serialize(user) == {
+                "id": user.id,
+                "username": "ana",
+                "active": True,
+                "permissions": ["users:read"],
+            }
 
         assert User.__table__.c.updated_at.onupdate is not None
         assert Role.__table__.c.updated_at.onupdate is not None

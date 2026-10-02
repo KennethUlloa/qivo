@@ -101,7 +101,9 @@ def test_generated_auth_app_supports_registration_login_and_protected_tasks(
         with generated.app.test_client() as client:
             assert client.get("/login").status_code == 200
             assert client.get("/register").status_code == 200
-            assert client.get("/tasks").status_code == 401
+            unauthorized = client.get("/tasks")
+            assert unauthorized.status_code == 302
+            assert unauthorized.headers["Location"] == "/login"
 
             registered = client.post(
                 "/register",
@@ -112,7 +114,9 @@ def test_generated_auth_app_supports_registration_login_and_protected_tasks(
             assert b"Tasks" in registered.data
 
             client.post("/logout")
-            assert client.get("/tasks").status_code == 401
+            unauthorized = client.get("/tasks")
+            assert unauthorized.status_code == 302
+            assert unauthorized.headers["Location"] == "/login"
 
             logged_in = client.post(
                 "/login",

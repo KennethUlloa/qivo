@@ -23,7 +23,7 @@ class User(TimestampMixin, AuthBase):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(unique=True, nullable=False)
-    _password: Mapped[str] = mapped_column(nullable=False, name="password")
+    password: Mapped[str] = mapped_column(nullable=False)
     active: Mapped[bool] = mapped_column(default=True, nullable=False)
     roles: Mapped[list["Role"]] = relationship(
         secondary="user_roles", back_populates="users"
@@ -50,6 +50,15 @@ class User(TimestampMixin, AuthBase):
                 permissions.append(permission.key)
         return permissions
 
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "username": self.username,
+            "active": self.active,
+            "permissions": self.get_permissions(),
+            "roles": [role.key for role in self.roles],
+        }
+
 
 class Role(TimestampMixin, AuthBase):
     __tablename__ = "roles"
@@ -63,6 +72,14 @@ class Role(TimestampMixin, AuthBase):
         secondary="role_permissions", back_populates="roles"
     )
 
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "key": self.key,
+            "name": self.name,
+            "permissions": [permission.key for permission in self.permissions],
+        }
+
 
 class Permission(TimestampMixin, AuthBase):
     __tablename__ = "permissions"
@@ -72,6 +89,13 @@ class Permission(TimestampMixin, AuthBase):
     roles: Mapped[list[Role]] = relationship(
         secondary="role_permissions", back_populates="permissions"
     )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "key": self.key,
+            "description": self.description,
+        }
 
 
 user_roles = Table(

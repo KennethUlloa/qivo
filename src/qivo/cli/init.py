@@ -39,6 +39,14 @@ qivo = Qivo(app__QIVO_OPTIONS__)
 db = SQLEngine(app__DATABASE_OPTIONS__)
 __AUTH_SETUP__
 
+@app.route("/")
+def index():
+    return redirect(url_for("tasks"))
+
+@app.errorhandler(401)
+def unauthorized(error):
+    return redirect(url_for("login"))
+
 @app.get("/tasks")
 @qivo.view(__VIEW_OPTIONS__)
 def tasks():
@@ -300,6 +308,14 @@ class Task(Model):
     title: Mapped[str]
     due_to: Mapped[date | None] = mapped_column(Date, nullable=True)
     completed: Mapped[bool] = mapped_column(default=False)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "due_to": self.due_to,
+            "completed": self.completed,
+        }
 """
 
 
