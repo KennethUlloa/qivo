@@ -1,94 +1,56 @@
-from pathlib import Path
+import sys
+from uuid import uuid4
 
 import pytest
 from flask import Flask
-from sqlalchemy import ForeignKey, create_engine
-from sqlalchemy.orm import Mapped, Session, mapped_column, relationship, sessionmaker
 
-from qivo.db.sql import close_session, model_base
-from qivo.db.sql.extensions import SQLEngine
-
-Base = model_base("Base")
+from qivo.ext.sql import _session_context
+from qivo.settings import load_toml_file
 
 
-class User(Base):
-    __tablename__ = "users"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str]
-    roles: Mapped[list["Role"]] = relationship(
-        secondary="user_roles", back_populates="users"
-    )
+@pytest.fixture(autouse=True)
+def workdir(tmp_path, monkeypatch):
+    """Run every test from an empty temporary working directory."""
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
 
 
-class Role(Base):
-    __tablename__ = "roles"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str]
-    users: Mapped[list[User]] = relationship(
-        secondary="user_roles", back_populates="roles"
-    )
+@pytest.fixture(autouse=True)
+def reset_session_context():
+    """Keep the SQL session ContextVar isolated between tests."""
+    _session_context.set(None)
+    yield
+    _session_context.set(None)
 
 
-class UserRole(Base):
-    __tablename__ = "user_roles"
-
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
-    role_id: Mapped[int] = mapped_column(ForeignKey("roles.id"), primary_key=True)
-
-
-Unconfigured = model_base("Unconfigured")
+@pytest.fixture(autouse=True)
+def clear_toml_cache():
+    """Settings files are cached by path, isolate that cache per test."""
+    load_toml_file.cache_clear()
+    yield
+    load_toml_file.cache_clear()
 
 
-def build_app(tmp_path: Path, name: str = "app.db", **config) -> Flask:
+@pytest.fixture
+def app():
     app = Flask(__name__)
-    app.config.from_mapping(
-        SQLALCHEMY_DATABASE_URI=f"sqlite:///{tmp_path}/{name}",
-        SQLALCHEMY_ENGINE_OPTIONS={},
-        SQLALCHEMY_SESSION_OPTIONS={},
-        **config,
-    )
-    app.testing = True
+    app.config.update(TESTING=True)
     return app
 
 
 @pytest.fixture
-def engine(tmp_path: Path):
-    # A file database, not "sqlite://" memory: with memory every session in the
-    # thread shares one connection, which would hide the read/write separation.
-    engine = create_engine(f"sqlite:///{tmp_path}/qivo-test.db")
-    Base.configure(engine)
-    Base.metadata.create_all(engine)
-    try:
-        yield engine
-    finally:
-        close_session(Base)
-        Base.metadata.drop_all(engine)
-        engine.dispose()
+def importable_module(tmp_path, monkeypatch):
+    """Write importable modules into a temporary directory."""
+    monkeypatch.syspath_prepend(str(tmp_path))
+    created = []
 
+    def create(content, prefix="module"):
+        name = f"{prefix}_{uuid4().hex}"
+        (tmp_path / f"{name}.py").write_text(content, encoding="utf-8")
+        created.append(name)
+        return name
 
-@pytest.fixture
-def sql_app(tmp_path: Path):
-    app = build_app(tmp_path)
-    extension = SQLEngine(app, model=Base)
-    Base.metadata.create_all(extension.engine)
-    try:
-        yield app, extension
-    finally:
-        close_session(Base)
-        Base.metadata.drop_all(extension.engine)
-        extension.engine.dispose()
+    yield create
 
-
-def independent_session(engine) -> Session:
-    """A session unrelated to the ambient and transaction sessions."""
-
-    return sessionmaker(engine)()
-
-
-def load_detached(engine, model, identity):
-    """Load a row through a session that closes, leaving the instance detached."""
-
-    with independent_session(engine) as session:
-        return session.get(model, identity)
+    for name in created:
+        sys.modules.pop(name, None)

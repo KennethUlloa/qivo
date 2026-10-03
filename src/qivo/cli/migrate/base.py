@@ -1,7 +1,6 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from alembic import command
 from alembic.config import Config
@@ -73,14 +72,9 @@ class AlembicMigrations:
     def __init__(
         self,
         engine: Engine,
-        metadata: MetaData | Sequence[MetaData] | None = None,
+        metadata: MetaData | Sequence[MetaData],
         config: MigrationConfig | None = None,
     ):
-        if metadata is None:
-            from qivo.db.sql import Model
-
-            metadata = Model.metadata
-
         self.engine = engine
         self.metadata = metadata
         self.options = config or MigrationConfig()

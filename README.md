@@ -122,15 +122,14 @@ or `@blueprint.route(...)`; Flask handles registration and lifecycle as usual.
 
 Configure the database declaratively in Flask, then attach the SQL extension.
 `SQLEngine` reads the URL, engine options, and session options from `app.config`
-and configures the model base automatically:
+and manages sessions independently of the declarative model base:
 
 ```python
 from flask import Flask
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Mapped, mapped_column
 
-from qivo import Qivo
-from qivo.db.sql import Model, close_session, get_session, transaction
+from qivo.db.sql import Model, transaction
 from qivo.db.sql.extensions import SQLEngine
 
 app = Flask(__name__)
@@ -139,7 +138,6 @@ app.config.from_mapping(
 	SQLALCHEMY_ENGINE_OPTIONS={},
 	SQLALCHEMY_SESSION_OPTIONS={},
 )
-qivo = Qivo(app)
 db = SQLEngine(app)
 
 
@@ -151,69 +149,66 @@ class User(Model):
 	is_active: Mapped[bool]
 
 
-user = User(name="admin", is_active=True)
-user.q.save()
+@app.get("/users")
+def users():
+	return db.session.scalars(select(User)).all()
 
-user = User.q.get(user.id)
-user.name = "root"
-user.q.save()
 
-user.q.delete()  # Returns False if the row no longer exists.
-
-admin = User.q.filter(name="admin").first()
-active_admins = User.q.where(User.name == "admin").where(
-	User.is_active == True
-).all()
+@app.post("/users")
+def create_user():
+	user = User(name="admin", is_active=True)
+	db.session.add(user)
+	db.session.commit()
+	return {"id": user.id}
 ```
 
-Queries run on a shared read session that stays open while the request does, so
-a returned instance keeps its relationships available:
+`db.session` creates a session on first access, reuses it for the request, and
+closes it when Flask tears down the request context. Use normal SQLAlchemy
+operations for queries, writes, and deletes:
 
 ```python
-user = User.q.where(User.name == "admin").first()
-user.roles  # Loaded from the database on first access.
+user = db.session.scalars(
+	select(User).where(User.name == "admin")
+).first()
+user.roles  # Loaded from the database while the request session is open.
+
+db.session.delete(user)
+db.session.commit()
 ```
 
-Outside a request, close it explicitly with `close_session()` or call
-`SQLEngine.dispose()`. `SQLEngine` does not create tables automatically; use the
-migration commands for schema changes.
+`SQLEngine` does not create tables automatically; use the migration commands
+for schema changes.
 
 ### Writes and Transactions
 
-Outside a transaction, `save()` and `delete()` use their own connection and
-commit only the instance and the relationships it holds. `save()` returns the
-same instance, and objects left unsaved on the read session raise an error when
-it is closed.
-
-Inside `transaction()` every query and write shares one session and connection.
-`save()` and `delete()` flush instead of committing, so the whole block commits
-on exit or rolls back as a unit:
+Commit writes explicitly with `db.session.commit()`. To group operations
+atomically, `transaction()` shares its session with `db.session` and commits on
+exit or rolls back if an exception escapes. The transaction session closes on
+exit, and `db.session` then resolves to the request's global session again:
 
 ```python
 from qivo.db.sql import transaction
 
 with transaction() as t:
-    user = User.q.where(User.name == "admin").first()
+	user = t.scalars(select(User).where(User.name == "admin")).first()
     user.name = "root"
-    user.q.save()  # Committed when the block exits.
+	# Committed when the block exits.
 ```
 
 A nested `transaction()` joins the session of the enclosing block; the real
-commit happens when the outermost block exits. An instance loaded before the
-block keeps its identity and moves into the transaction session, so the variable
-you already have is the one that gets saved. On a successful commit that session
-becomes the shared read session, which keeps instances usable after the block:
+commit happens when the outermost block exits. Objects loaded only by the
+transaction session are detached after it closes, so reload them through
+`db.session` if they are needed later in the request:
 
 ```python
 with transaction() as t:
-    user = User.q.where(User.name == "admin").first()
-    user.q.save()
+	user = t.scalars(select(User).where(User.name == "admin")).first()
+	user.name = "root"
 
-user.roles  # Still loadable after the block.
+user = db.session.get(User, user.id)
 ```
 
-Use the yielded session for anything the query API does not cover, such as bulk
-statements or `session.add()`:
+Use the yielded session for any SQLAlchemy operation, including bulk statements:
 
 ```python
 with transaction() as t:
@@ -221,11 +216,9 @@ with transaction() as t:
     t.execute(delete(Role).where(Role.name == "obsolete"))
 ```
 
-With several model bases, pass the base explicitly: `transaction(OtherBase)`.
-
-For an isolated declarative base, build one with `model_base()` and hand it to
-`SQLEngine(app, model=Base)`. Without an argument, `transaction()`, `get_session()`
-and `close_session()` target the most recently configured base.
+`transaction()` and `get_session()` resolve the `SQLEngine` attached to the
+active Flask application. `model_base()` only creates isolated model metadata;
+the model classes do not need to be registered with the engine.
 
 ## Sessions
 
@@ -247,7 +240,7 @@ app.config.from_mapping(
     QIVO_SESSION_LIFETIME=60 * 60 * 24 * 14,  # 14 days, in seconds
 )
 qivo = Qivo(app)
-db = SQLEngine(app, model=Base)
+db = SQLEngine(app)
 sessions = DatabaseSessions(app, model=FlaskSessionRow)
 ```
 
@@ -274,11 +267,10 @@ uv run qivo migrate --message "session table"
 uv run qivo migrate:apply
 ```
 
-There is no separate session section. With an isolated base, use that base for
-both `SQLEngine(app, model=Base)` and `FlaskSessionRow`, then pass the mapped row
-to `DatabaseSessions(app, model=FlaskSessionRow)`. When using multiple bases,
-declare the Flask session model on exactly one configured base; `sessions:prune`
-finds it automatically.
+There is no separate session section. `DatabaseSessions` uses the engine attached
+to the app by `SQLEngine(app)`; the Flask session row only needs to be included
+in the model base used by migrations. When using multiple bases, declare the
+Flask session model on exactly one base; `sessions:prune` finds it automatically.
 
 Expired rows are deleted by a sweep that runs once every
 `QIVO_SESSION_CLEANUP_INTERVAL` requests, one hundred by default, and on demand:
