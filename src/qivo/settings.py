@@ -3,7 +3,7 @@ import tomllib
 import sys
 from functools import cache
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @cache
@@ -23,6 +23,7 @@ class Application:
     import_path: str
     port: int = 5000
     host: str = "0.0.0.0"
+    extra_files: list[str] = field(default_factory=list)
 
     @classmethod
     def from_toml(cls, path: str):

@@ -24,9 +24,7 @@ jobs:
         with:
           python-version: "x"
       - name: Install uv
-        run: |
-          python3 -m pip install
-          uv
+        run: python3 -m pip install uv
       - name: Install the project
         run: uv sync --group dev
       - name: Run the test suite

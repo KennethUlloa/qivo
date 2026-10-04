@@ -22,7 +22,8 @@ def run_app(host: str, port: int, debug: bool) -> None:
     data ={
         "host": host if host is not None else application.host,
         "port": port if port is not None else application.port,
-        "debug": debug
+        "debug": debug,
+        "extra_files": application.extra_files
     }
     
     app.run(**data)

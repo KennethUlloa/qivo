@@ -20,6 +20,7 @@ name = "Tasks"
 host = "localhost"
 port = 8000
 import_path = "app:create_app"
+extra_files = []
 
 [sqlalchemy]
 url = "sqlite:///app.db"
@@ -129,6 +130,7 @@ configured through `app.config`; qivo only reads the keys it documents.
 | `application` | `name` | Application name. |
 | | `import_path` | `module:attribute` of the Flask app or app factory. |
 | | `host`, `port` | Defaults for `qivo run`. |
+| | `extra_files` | Files to watch in debug mode. |
 | `sqlalchemy` | `url` | Database URL used by `migrate` and `seed`. |
 | | `engine_options` | Keyword arguments passed to `create_engine`. |
 | `migrations` | `directory` | Alembic directory, created on the first revision. |
