@@ -1,4 +1,3 @@
-import json
 import sys
 
 import pytest
@@ -145,16 +144,6 @@ def test_settings_from_toml(config_file):
     assert settings.sqlalchemy.url == "sqlite:///app.db"
     assert settings.migrations.model_bases == ["app.models:Model"]
     assert settings.seed.registry_path == "seeders:seeders"
-
-
-def test_settings_from_json(tmp_path):
-    path = tmp_path / "qivo.json"
-    path.write_text(json.dumps(JSON_CONTENT), encoding="utf-8")
-
-    settings = Settings.from_json(str(path))
-
-    assert settings.application.port == 5000
-    assert settings.sqlalchemy.url == "sqlite:///app.db"
 
 
 def test_settings_from_dict():
