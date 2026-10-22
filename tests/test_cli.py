@@ -13,6 +13,7 @@ name = "Tasks"
 host = "localhost"
 port = 8000
 import_path = "{import_path}"
+extra_files = []
 
 [sqlalchemy]
 url = "sqlite:///{database}"
@@ -193,7 +194,7 @@ def test_run_uses_the_configured_host_and_port(runner, project, monkeypatch):
     result = runner.invoke(cli, ["run"])
 
     assert result.exit_code == 0, result.output
-    assert calls == [{"host": "localhost", "port": 8000, "debug": False}]
+    assert calls == [{"host": "localhost", "port": 8000, "debug": False, "extra_files": []}]
 
 
 def test_run_options_override_the_configuration(runner, project, monkeypatch):
@@ -203,7 +204,7 @@ def test_run_options_override_the_configuration(runner, project, monkeypatch):
     result = runner.invoke(cli, ["run", "--host", "0.0.0.0", "--port", "9999", "--debug"])
 
     assert result.exit_code == 0, result.output
-    assert calls == [{"host": "0.0.0.0", "port": "9999", "debug": True}]
+    assert calls == [{"host": "0.0.0.0", "port": "9999", "debug": True, "extra_files": []}]
 
 
 def test_run_accepts_an_application_factory(runner, workdir, importable_module, monkeypatch):
@@ -220,7 +221,7 @@ def test_run_accepts_an_application_factory(runner, workdir, importable_module, 
     result = runner.invoke(cli, ["run"])
 
     assert result.exit_code == 0, result.output
-    assert calls == [{"host": "localhost", "port": 8000, "debug": False}]
+    assert calls == [{"host": "localhost", "port": 8000, "debug": False, "extra_files": []}]
 
 
 def test_run_with_an_invalid_import_path(runner, workdir, importable_module):
