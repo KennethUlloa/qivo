@@ -1,7 +1,7 @@
 from enum import Enum
 from datetime import date, datetime, time
 from decimal import Decimal
-from typing import Any
+from typing import Any, Union
 from uuid import UUID
 from dataclasses import is_dataclass, asdict
 
@@ -11,13 +11,25 @@ from sqlalchemy.orm import DeclarativeBase
 from qivo.sql.utils import to_dict as sql_to_dict
 
 
-class ObjectJSONEncoder(DefaultJSONProvider):
-    def __init__(self, app: Flask, inner_methods: list = []):
-        super().__init__(app)
-        self.inner_methods = inner_methods
+class Extension:
+    def matches(self, obj: Any) -> bool:
+        pass
 
+    def serialize(self, obj: Any) -> Union[dict, list]:
+        pass
+
+
+class ObjectJSONEncoder(DefaultJSONProvider):
+    def __init__(self, app: Flask, extension: Extension = None):
+        super().__init__(app)
+        self.extension = None
+        if isinstance(extension, Extension):
+            self.extension = extension
 
     def default(self, value: Any) -> Any:
+        if self.extension and self.extension.matches(value):
+            return self.extension.serialize(value)
+
         if isinstance(value, (datetime, date, time)):
             return value.isoformat()
 
@@ -31,11 +43,6 @@ class ObjectJSONEncoder(DefaultJSONProvider):
 
         if callable(to_dict):
             return to_dict()
-
-        if self.inner_methods:
-            for method in self.inner_methods:
-                if hasattr(value, method) and callable(getattr(value, method)):
-                    return getattr(value, method)()
 
         if is_dataclass(value):
             return asdict(value)
