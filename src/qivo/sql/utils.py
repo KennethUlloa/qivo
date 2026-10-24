@@ -44,12 +44,12 @@ def to_dict(model: DeclarativeBase):
     excluded = ensure_list(getattr(model, "__exclude__", []))
     included = ensure_list(getattr(model, "__include__", []))
 
-    if not isinstance(excluded, list):
+    if not isinstance(excluded, (list, tuple)):
         excluded = []
 
     data = {k: getattr(model, k) for k, v in model.__table__.c.items() if k not in excluded}
 
-    if included:
+    if isinstance(included, (list, tuple)):
         data.update({k: getattr(model, k) for k in included})
 
     return data
