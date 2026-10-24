@@ -1,14 +1,11 @@
-from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, time, timezone
-from decimal import Decimal
+from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum, IntEnum, StrEnum
-from uuid import UUID
 
 from flask import Flask, jsonify
-import pytest
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from qivo.serializer import ObjectJSONEncoder
+from qivo.serializer import Extension, ObjectJSONEncoder
 
 
 class Status(StrEnum):
@@ -40,7 +37,7 @@ class Person:
     level: Level
     tags: list[str] = field(default_factory=list)
 
-    def model_dump(self):
+    def to_model(self):
         return {
             "name": self.name,
             "age": self.age,
@@ -158,8 +155,15 @@ def test_model_serialization(app: Flask):
     }
 
 
-def test_extra_methods_serialization(app: Flask):
-    app.json = ObjectJSONEncoder(app, ["model_dump"])
+def test_serializer_extension(app: Flask):
+    class Serializer(Extension):
+        def matches(self, obj):
+            return hasattr(obj, "to_model") and callable(getattr(obj, "to_model"))
+
+        def serialize(self, obj):
+            return obj.to_model()
+
+    app.json = ObjectJSONEncoder(app, extension=Serializer())
 
     _date = datetime(2025, 1, 1, 12, 0, 0)
     target_iso = "2025-01-01T12:00:00"
