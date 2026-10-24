@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from qivo.ext.container import (
+from qivo.dicontainer import (
     DIContainer,
     DIToken,
     DependencyInfo,

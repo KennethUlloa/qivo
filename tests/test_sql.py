@@ -3,7 +3,7 @@ from flask import Flask
 from sqlalchemy import create_engine, inspect, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
-from qivo.ext.sql import SQL, db
+from qivo.sql.ext import SQL, db
 
 
 class Model(DeclarativeBase):

@@ -50,6 +50,8 @@ class BasePolicy(Protocol):
 
 
 class AuthManager(BaseExtension):
+    name = "qivo.auth"
+
     def __init__(self, provider: Callable[[str], BaseAuthHandler], app: Flask = None):
         if not provider:
             raise RuntimeError(
@@ -59,7 +61,7 @@ class AuthManager(BaseExtension):
 
         super().__init__(app)
 
-    def handler(self, name: str = DEFAULT_HANDLER_NAME) -> BaseAuthHandler:
+    def handler(self, name: str = DEFAULT_HANDLER_NAME) -> BaseAuthHandler | None:
         _handler = self._provider(name)
 
         if not _handler:
@@ -68,15 +70,31 @@ class AuthManager(BaseExtension):
         return _handler
 
 
-def auth_handler(name: str = DEFAULT_HANDLER_NAME) -> BaseAuthHandler:
+def auth_handler(name: str = DEFAULT_HANDLER_NAME) -> BaseAuthHandler | None:
     ext = AuthManager.current()
-    return ext.handler(name)
+    try:
+        return ext.handler(name)
+    except ValueError:
+        if name == DEFAULT_HANDLER_NAME:
+            return None
+        raise
 
 
 def current_user(
     *, required: bool, handler_name: str = DEFAULT_HANDLER_NAME
-) -> BaseUser:
-    handler = auth_handler(handler_name)
+) -> BaseUser | None:
+    try:
+        handler = auth_handler(handler_name)
+    except ValueError:
+        if required:
+            raise Unauthorized()
+        return None
+
+    if handler is None:
+        if required:
+            raise Unauthorized()
+        return None
+
     user = handler.get_current_user()
 
     if not user and required:
