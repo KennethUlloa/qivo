@@ -4,7 +4,7 @@ from uuid import uuid4
 import pytest
 from flask import Flask
 
-from qivo.ext.sql import _session_context
+from qivo.sql.ext import _session_context
 from qivo.settings import load_toml_file
 
 
