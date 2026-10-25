@@ -509,7 +509,7 @@ class Injected:
 # ============================================================================
 
 
-def provide(
+def inject(
     function: Callable[..., T],
 ) -> Callable[..., T]:
     """
@@ -517,7 +517,7 @@ def provide(
 
     Example:
 
-        @provide
+        @inject
         def create_user(
             service: UserService,
         ):
