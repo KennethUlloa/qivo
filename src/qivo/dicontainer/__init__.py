@@ -6,7 +6,7 @@ from functools import wraps
 from inspect import Parameter, signature
 from typing import Any, Callable, Type, TypeVar, overload
 
-from flask import Flask, current_app
+from flask import Flask
 from werkzeug.local import LocalProxy
 
 from qivo.ext.base import BaseExtension
@@ -329,7 +329,7 @@ class DIContainer(BaseExtension):
                 resolved[name] = self.resolve(parameter.default.name)
                 continue
 
-            if isinstance(parameter.default, Injector):
+            if isinstance(parameter.default, Injector) or getattr(parameter.default, "__injector__", False):
                 resolved[name] = parameter.default(parameter.annotation)
                 continue
 
@@ -505,7 +505,7 @@ class Injected:
 
 
 # ============================================================================
-# @inject decorator
+# @provide decorator
 # ============================================================================
 
 

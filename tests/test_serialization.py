@@ -1,12 +1,11 @@
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timezone
-from decimal import Decimal
+from datetime import datetime
 from enum import Enum, IntEnum, StrEnum
-from uuid import UUID
 
-import pytest
+from flask import Flask, jsonify
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from qivo.ext.serialization import Serializer, serialized
+from qivo.serializer import Extension, ObjectJSONEncoder
 
 
 class Status(StrEnum):
@@ -34,246 +33,160 @@ class Person:
     age: int
     address: Address
     created_at: datetime
+    status: Status
+    level: Level
     tags: list[str] = field(default_factory=list)
 
-
-class Account:
-    def __init__(self, id, balance):
-        self.id = id
-        self.balance = balance
-
-    def to_dict(self):
-        return {"id": self.id, "balance": self.balance}
-
-
-@pytest.fixture
-def serializer(app):
-    return Serializer(app)
-
-
-# ---------------------------------------------------------------------------
-# Scalars and containers
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("value", ["text", 1, 1.5, True, None])
-def test_scalars_are_returned_as_is(serializer, value):
-    assert serializer.serialize(value) == value
-
-
-def test_none_is_serialized(serializer):
-    assert serializer.serialize(None) is None
-
-
-def test_dicts_are_serialized_recursively(serializer):
-    value = {"name": "Ada", "meta": {"created_at": datetime(2024, 1, 2, 3, 4, 5)}}
-
-    assert serializer.serialize(value) == {
-        "name": "Ada",
-        "meta": {"created_at": "2024-01-02T03:04:05"},
-    }
-
-
-def test_dict_keys_are_serialized(serializer):
-    identifier = UUID("12345678-1234-5678-1234-567812345678")
-
-    assert serializer.serialize({identifier: 1}) == {str(identifier): 1}
-
-
-def test_tuples_and_sets_become_lists(serializer):
-    assert serializer.serialize((1, 2)) == [1, 2]
-    assert serializer.serialize(frozenset({3})) == [3]
-    assert sorted(serializer.serialize({1, 2})) == [1, 2]
-
-
-def test_nested_containers(serializer):
-    assert serializer.serialize([{"values": (1, 2)}]) == [{"values": [1, 2]}]
-
-
-# ---------------------------------------------------------------------------
-# Objects
-# ---------------------------------------------------------------------------
-
-
-def test_dataclasses_are_converted(serializer):
-    person = Person(
-        name="Ada",
-        age=36,
-        address=Address(street="Main", zipcode=12345),
-        created_at=datetime(2024, 1, 2, 3, 4, 5),
-        tags=["math"],
-    )
-
-    assert serializer.serialize(person) == {
-        "name": "Ada",
-        "age": 36,
-        "address": {"street": "Main", "zipcode": 12345},
-        "created_at": "2024-01-02T03:04:05",
-        "tags": ["math"],
-    }
-
-
-def test_to_dict_objects_are_serialized(serializer):
-    account = Account(id=UUID("12345678-1234-5678-1234-567812345678"), balance=Decimal("10.50"))
-
-    assert serializer.serialize(account) == {
-        "id": "12345678-1234-5678-1234-567812345678",
-        "balance": "10.50",
-    }
-
-
-def test_objects_without_to_dict_are_returned_as_is(serializer):
-    class Plain:
-        pass
-
-    plain = Plain()
-
-    assert serializer.serialize(plain) is plain
-
-
-def test_enums_are_serialized_by_value(serializer):
-    assert serializer.serialize(Status.ACTIVE) == "active"
-    assert serializer.serialize(Level.LOW) == 1
-    assert serializer.serialize(Priority.HIGH) == "high"
-
-
-def test_enums_inside_containers(serializer):
-    assert serializer.serialize([Status.ACTIVE, Status.INACTIVE]) == [
-        "active",
-        "inactive",
-    ]
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        (datetime(2024, 1, 2, 3, 4, 5), "2024-01-02T03:04:05"),
-        (
-            datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
-            "2024-01-02T03:04:05+00:00",
-        ),
-        (date(2024, 1, 2), "2024-01-02"),
-        (time(3, 4, 5), "03:04:05"),
-    ],
-)
-def test_temporal_values_use_isoformat(serializer, value, expected):
-    assert serializer.serialize(value) == expected
-
-
-def test_uuid_and_decimal_become_strings(serializer):
-    identifier = UUID("12345678-1234-5678-1234-567812345678")
-
-    assert serializer.serialize(identifier) == str(identifier)
-    assert serializer.serialize(Decimal("3.14")) == "3.14"
-
-
-# ---------------------------------------------------------------------------
-# Custom serializers
-# ---------------------------------------------------------------------------
-
-
-def test_custom_serializer_takes_precedence(serializer):
-    class AccountSerializer:
-        def match(self, value):
-            return isinstance(value, Account)
-
-        def serialize(self, value):
-            return {"id": value.id, "currency": "EUR"}
-
-    serializer.add(AccountSerializer())
-
-    assert serializer.serialize(Account(id=1, balance=Decimal("1"))) == {
-        "id": 1,
-        "currency": "EUR",
-    }
-
-
-def test_only_the_first_matching_custom_serializer_is_used(serializer):
-    class UpperSerializer:
-        def match(self, value):
-            return isinstance(value, str)
-
-        def serialize(self, value):
-            return value.upper()
-
-    class ExclaimSerializer:
-        def match(self, value):
-            return isinstance(value, str)
-
-        def serialize(self, value):
-            return value + "!"
-
-    serializer.add(UpperSerializer())
-    serializer.add(ExclaimSerializer())
-
-    assert serializer.serialize("hello") == "HELLO"
-
-
-def test_custom_serializers_apply_to_nested_values(serializer):
-    class AccountSerializer:
-        def match(self, value):
-            return isinstance(value, Account)
-
-        def serialize(self, value):
-            return value.id
-
-    serializer.add(AccountSerializer())
-
-    assert serializer.serialize({"accounts": [Account(id=1, balance=0)]}) == {
-        "accounts": [1]
-    }
-
-
-# ---------------------------------------------------------------------------
-# Flask integration
-# ---------------------------------------------------------------------------
-
-
-def test_serializer_current_returns_the_attached_instance(app, serializer):
-    with app.app_context():
-        assert Serializer.current() is serializer
-
-
-def test_serializer_current_requires_an_app_context(serializer):
-    with pytest.raises(RuntimeError):
-        Serializer.current()
-
-
-def test_serialized_decorator(app, serializer):
-    @serialized
-    def handler():
-        return Person(
-            name="Ada",
-            age=36,
-            address=Address(street="Main", zipcode=12345),
-            created_at=datetime(2024, 1, 2, 3, 4, 5),
-        )
-
-    with app.app_context():
-        assert handler() == {
-            "name": "Ada",
-            "age": 36,
-            "address": {"street": "Main", "zipcode": 12345},
-            "created_at": "2024-01-02T03:04:05",
-            "tags": [],
+    def to_model(self):
+        return {
+            "name": self.name,
+            "age": self.age,
+            "date": self.created_at
         }
 
 
-def test_serialized_decorator_preserves_the_function_metadata(serializer):
-    @serialized
-    def handler():
-        """Docstring."""
+class Account:
+    def __init__(self, id, balance, card, created_date):
+        self.id = id
+        self.balance = balance
+        self.card = card
+        self.created_date = created_date
 
-    assert handler.__name__ == "handler"
-    assert handler.__doc__ == "Docstring."
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "balance": self.balance,
+            "card": self.card,
+            "created_at": self.created_date,
+            "__type__": "object",
+        }
 
 
-def test_serialized_in_a_flask_view(app, serializer):
-    @app.get("/accounts")
-    @serialized
-    def index():
-        return [Account(id=1, balance=Decimal("9.99"))]
+class Model(DeclarativeBase):
+    pass
+
+class User(Model):
+    __tablename__ = "users"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column()
+    birthdate: Mapped[datetime] = mapped_column()
+    status: Mapped[Status] = mapped_column()
+
+
+def test_dataclass_serialization(app: Flask):
+    app.json = ObjectJSONEncoder(app)
+
+    _date = datetime(2025, 1, 1, 12, 0, 0)
+    target_iso = "2025-01-01T12:00:00"
+
+    @app.route("/test")
+    def test():
+        return jsonify(
+            Person(
+                name="Test",
+                age=34,
+                address=Address(street="123", zipcode=123),
+                created_at=_date,
+                tags=["hello", "world"],
+                level=Level.LOW,
+                status=Status.ACTIVE,
+            )
+        )
 
     client = app.test_client()
+    res = client.get("/test")
 
-    assert client.get("/accounts").json == [{"id": 1, "balance": "9.99"}]
+    assert res.json == {
+        "name": "Test",
+        "age": 34,
+        "address": {"street": "123", "zipcode": 123},
+        "tags": ["hello", "world"],
+        "created_at": target_iso,
+        "level": 1,
+        "status": "active",
+    }
+
+
+def test_to_dict_serialization(app: Flask):
+    app.json = ObjectJSONEncoder(app)
+
+    created_date = datetime(2025, 1, 1, 12, 0, 0)
+    target_iso = "2025-01-01T12:00:00"
+
+    @app.route("/test")
+    def test():
+        return jsonify(Account(1, 200, "testing", created_date))
+    
+    client = app.test_client()
+    res = client.get("/test")
+
+    assert res.json == {
+        "id": 1,
+        "balance": 200,
+        "card": "testing",
+        "created_at": target_iso,
+        "__type__": "object"
+    }
+
+
+def test_model_serialization(app: Flask):
+    app.json = ObjectJSONEncoder(app)
+
+    created_date = datetime(2025, 1, 1, 12, 0, 0)
+    target_iso = "2025-01-01T12:00:00"
+
+    @app.route("/test")
+    def test():
+        return jsonify(User(
+            id=1,
+            name="Admin",
+            birthdate=created_date,
+            status=Status.ACTIVE
+        ))
+    
+    client = app.test_client()
+    res = client.get("/test")
+
+    assert res.json == {
+        "id": 1,
+        "name": "Admin",
+        "birthdate": target_iso,
+        "status": "active"
+    }
+
+
+def test_serializer_extension(app: Flask):
+    class Serializer(Extension):
+        def matches(self, obj):
+            return hasattr(obj, "to_model") and callable(getattr(obj, "to_model"))
+
+        def serialize(self, obj):
+            return obj.to_model()
+
+    app.json = ObjectJSONEncoder(app, extension=Serializer())
+
+    _date = datetime(2025, 1, 1, 12, 0, 0)
+    target_iso = "2025-01-01T12:00:00"
+
+    @app.route("/test")
+    def test():
+        return jsonify(
+            Person(
+                name="Test",
+                age=34,
+                address=Address(street="123", zipcode=123),
+                created_at=_date,
+                tags=["hello", "world"],
+                level=Level.LOW,
+                status=Status.ACTIVE,
+            )
+        )
+
+    client = app.test_client()
+    res = client.get("/test")
+
+    assert res.json == {
+        "name": "Test",
+        "age": 34,
+        "date": target_iso
+    }
