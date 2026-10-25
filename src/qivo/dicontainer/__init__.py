@@ -329,7 +329,7 @@ class DIContainer(BaseExtension):
                 resolved[name] = self.resolve(parameter.default.name)
                 continue
 
-            if isinstance(parameter.default, Injector):
+            if isinstance(parameter.default, Injector) or getattr(parameter.default, "__injector__", False):
                 resolved[name] = parameter.default(parameter.annotation)
                 continue
 
